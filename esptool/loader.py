@@ -98,14 +98,8 @@ DEFAULT_SERIAL_WRITE_TIMEOUT = cfg.getfloat("serial_write_timeout", 10)
 DEFAULT_CONNECT_ATTEMPTS = cfg.getint("connect_attempts", 7)
 # Number of times to try writing a data block
 WRITE_BLOCK_ATTEMPTS = cfg.getint("write_block_attempts", 3)
-
-STUBS_DIR = os.path.join(os.path.dirname(__file__), "targets", "stub_flasher")
-
-
-def get_stub_json_path(chip_name):
-    chip_name = strip_chip_name(chip_name)
-    chip_name = chip_name.replace("esp", "")
-    return os.path.join(STUBS_DIR, f"stub_flasher_{chip_name}.json")
+# Number of times to try opening the serial port
+DEFAULT_OPEN_PORT_ATTEMPTS = cfg.getint("open_port_attempts", 1)
 
 
 def timeout_per_mb(seconds_per_mb, size_bytes):
@@ -157,8 +151,12 @@ def esp32s3_or_newer_function_only(func):
 
 
 class StubFlasher:
-    def __init__(self, json_path):
-        with open(json_path) as json_file:
+    STUB_DIR = os.path.join(os.path.dirname(__file__), "targets", "stub_flasher")
+    # directories will be searched in the order of STUB_SUBDIRS
+    STUB_SUBDIRS = ["1", "2"]
+
+    def __init__(self, chip_name):
+        with open(self.get_json_path(chip_name)) as json_file:
             stub = json.load(json_file)
 
         self.text = base64.b64decode(stub["text"])
@@ -173,6 +171,26 @@ class StubFlasher:
             self.data_start = None
 
         self.bss_start = stub.get("bss_start")
+
+    def get_json_path(self, chip_name):
+        chip_name = strip_chip_name(chip_name)
+        for i, subdir in enumerate(self.STUB_SUBDIRS):
+            json_path = os.path.join(self.STUB_DIR, subdir, f"{chip_name}.json")
+            if os.path.exists(json_path):
+                if i:
+                    print(
+                        f"Warning: Stub version {self.STUB_SUBDIRS[0]} doesn't exist, using {subdir} instead"
+                    )
+
+                return json_path
+        else:
+            raise FileNotFoundError(f"Stub flasher JSON file for {chip_name} not found")
+
+    @classmethod
+    def set_preferred_stub_subdir(cls, subdir):
+        if subdir in cls.STUB_SUBDIRS:
+            cls.STUB_SUBDIRS.remove(subdir)
+            cls.STUB_SUBDIRS.insert(0, subdir)
 
 
 class ESPLoader(object):
@@ -335,10 +353,7 @@ class ESPLoader(object):
                     port_issues.append(
                         [  # permission denied error
                             re.compile(r"Permission denied", re.IGNORECASE),
-                            (
-                                "Try to add user into dialout group: "
-                                "sudo usermod -a -G dialout $USER"
-                            ),
+                            ("Try to add user into dialout or uucp group."),
                         ],
                     )
 
@@ -813,11 +828,14 @@ class ESPLoader(object):
         """Start downloading an application image to RAM"""
         # check we're not going to overwrite a running stub with this data
         if self.IS_STUB:
-            stub = StubFlasher(get_stub_json_path(self.CHIP_NAME))
+            stub = StubFlasher(self.CHIP_NAME)
             load_start = offset
             load_end = offset + size
             for stub_start, stub_end in [
-                (stub.bss_start, stub.data_start + len(stub.data)),  # DRAM = bss+data
+                (
+                    stub.bss_start or stub.data_start,
+                    stub.data_start + len(stub.data),
+                ),  # DRAM = bss+data
                 (stub.text_start, stub.text_start + len(stub.text)),  # IRAM
             ]:
                 if load_start < stub_end and load_end > stub_start:
@@ -1018,7 +1036,7 @@ class ESPLoader(object):
 
     def run_stub(self, stub=None):
         if stub is None:
-            stub = StubFlasher(get_stub_json_path(self.CHIP_NAME))
+            stub = StubFlasher(self.CHIP_NAME)
 
         if self.sync_stub_detected:
             print("Stub is already running. No upload is necessary.")
