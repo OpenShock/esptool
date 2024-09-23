@@ -45,6 +45,12 @@ class ESP32C61ROM(ESP32C6ROM):
     EFUSE_SECURE_BOOT_EN_REG = EFUSE_BASE + 0x034
     EFUSE_SECURE_BOOT_EN_MASK = 1 << 26
 
+    FLASH_FREQUENCY = {
+        "80m": 0xF,
+        "40m": 0x0,
+        "20m": 0x2,
+    }
+
     MEMORY_MAP = [
         [0x00000000, 0x00010000, "PADDING"],
         [0x41800000, 0x42000000, "DROM"],
@@ -80,6 +86,18 @@ class ESP32C61ROM(ESP32C6ROM):
         14: "XTS_AES_256_KEY_2_PSRAM",
         15: "XTS_AES_128_KEY_PSRAM",
     }
+
+    def get_pkg_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 26) & 0x07
+
+    def get_minor_chip_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 0) & 0x0F
+
+    def get_major_chip_version(self):
+        num_word = 2
+        return (self.read_reg(self.EFUSE_BLOCK1_ADDR + (4 * num_word)) >> 4) & 0x03
 
     def get_chip_description(self):
         chip_name = {
