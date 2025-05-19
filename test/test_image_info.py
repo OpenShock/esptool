@@ -26,7 +26,7 @@ def read_image(filename):
 @pytest.mark.host_test
 class TestImageInfo:
     def run_image_info(self, chip, file):
-        """Runs image_info on a binary file.
+        """Runs image-info on a binary file.
         Returns the command output.
         Filenames are relative to the 'test/images' directory.
         """
@@ -37,7 +37,7 @@ class TestImageInfo:
             "esptool",
             "--chip",
             chip,
-            "image_info",
+            "image-info",
         ]
         # if path was passed use the whole path
         # if file does not exists try to use file from IMAGES_DIR directory
@@ -48,9 +48,9 @@ class TestImageInfo:
             output = subprocess.check_output(cmd, stderr=subprocess.STDOUT)
             output = output.decode("utf-8")
             print(output)  # for more complete stdout logs on failure
-            assert (
-                "warning" not in output.lower()
-            ), "image_info should not output warnings"
+            assert "warning" not in output.lower(), (
+                "image-info should not output warnings"
+            )
             return output
         except subprocess.CalledProcessError as e:
             print(e.output)
@@ -78,9 +78,9 @@ class TestImageInfo:
         assert "Maximal chip revision: v0.0" in out, "Wrong min revision"
 
         # Segments
-        assert (
-            "1  0x01864  0x3fcd6114  0x00000034  DRAM, BYTE_ACCESSIBLE" in out
-        ), "Wrong segment info"
+        assert "1  0x01864  0x3fcd6114  0x00000034  DRAM, BYTE_ACCESSIBLE" in out, (
+            "Wrong segment info"
+        )
 
         # Footer
         assert "Checksum: 0x77 (valid)" in out, "Invalid checksum"
@@ -141,7 +141,7 @@ class TestImageInfo:
 
     def test_application_info(self):
         out = self.run_image_info("auto", "esp_idf_blink_esp32s2.bin")
-        assert "Application information" in out
+        assert "Application Information" in out
         assert "Project name: blink" in out
         assert "App version: qa-test-v5.0-20220830-4-g4532e6" in out
         assert "Secure version: 0" in out
@@ -152,24 +152,24 @@ class TestImageInfo:
         assert "ESP-IDF: v5.0-beta1-427-g4532e6e0b2-dirt" in out
         # No application info in image
         out = self.run_image_info("auto", "bootloader_esp32.bin")
-        assert "Application information" not in out
+        assert "Application Information" not in out
         out = self.run_image_info("auto", ESP8266_BIN)
-        assert "Application information" not in out
+        assert "Application Information" not in out
 
     def test_bootloader_info(self):
         # This bootloader binary is built from "hello_world" project
         # with default settings, IDF version is v5.2.
         out = self.run_image_info("esp32", "bootloader_esp32_v5_2.bin")
-        assert "File size: 26768 (bytes)" in out
-        assert "Bootloader information" in out
+        assert "Image size: 26768 bytes" in out
+        assert "Bootloader Information" in out
         assert "Bootloader version: 1" in out
         assert "ESP-IDF: v5.2-dev-254-g1950b15" in out
         assert "Compile time: Apr 25 2023 00:13:32" in out
 
     def test_intel_hex(self):
-        # This bootloader binary is built from "hello_world" project
-        # with default settings, IDF version is v5.2.
-        # File is converted to Intel Hex using merge_bin
+        # Convert and merge two files to Intel Hex using merge-bin
+        # Run image-info on the resulting Intel Hex file
+        # Verify that image info is shown for both files
 
         def convert_bin2hex(file):
             subprocess.check_output(
@@ -178,12 +178,14 @@ class TestImageInfo:
                     "-m",
                     "esptool",
                     "--chip",
-                    "esp32",
-                    "merge_bin",
+                    "esp32c3",
+                    "merge-bin",
                     "--format",
                     "hex",
                     "0x0",
-                    "".join([IMAGES_DIR, os.sep, "bootloader_esp32_v5_2.bin"]),
+                    os.path.join(IMAGES_DIR, "bootloader_esp32c3.bin"),
+                    "0x8000",
+                    os.path.join(IMAGES_DIR, "esp32c3_header_min_rev.bin"),
                     "-o",
                     file,
                 ]
@@ -192,12 +194,13 @@ class TestImageInfo:
         fd, file = tempfile.mkstemp(suffix=".hex")
         try:
             convert_bin2hex(file)
-            out = self.run_image_info("esp32", file)
-            assert "File size: 26768 (bytes)" in out
-            assert "Bootloader information" in out
-            assert "Bootloader version: 1" in out
-            assert "ESP-IDF: v5.2-dev-254-g1950b15" in out
-            assert "Compile time: Apr 25 2023 00:13:32" in out
+            out = self.run_image_info("esp32c3", file)
+            assert (
+                "Merged binary image detected. Processing each file individually."
+                in out
+            )
+            assert "Processing file 1/2, offset: 0x0, size: 17744 bytes" in out
+            assert "Processing file 2/2, offset: 0x8000, size: 48 bytes" in out
         finally:
             try:
                 # make sure that file was closed before removing it

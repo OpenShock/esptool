@@ -44,6 +44,8 @@ Please report bugs in ``esptool.py`` if you find them. However, before reporting
 
 If you don’t find anything, please `open a new issue <https://github.com/espressif/esptool/issues/new/choose>`_.
 
+.. _feature-requests:
+
 Sending Feature Requests
 ------------------------
 
@@ -73,7 +75,7 @@ Code Style & Static Analysis
 
 Please follow these coding standards when writing code for ``esptool.py``:
 
-Pre-commit checks
+Pre-Commit Checks
 """""""""""""""""
 
 `pre-commit <https://pre-commit.com/>`_ is a framework for managing pre-commit hooks. These hooks help to identify simple issues before committing code for review.
@@ -104,13 +106,13 @@ Ruff
 
 When you submit a Pull Request, the GitHub Actions automated build system will run automated checks using these tools.
 
-Shinx-lint
-""""""""""
+Sphinx-Lint
+"""""""""""
 
 The documentation is checked for stylistic and formal issues by ``sphinx-lint``.
 
 
-Codespell check
+Codespell Check
 """""""""""""""
 
 This repository utilizes an automatic `spell checker <https://github.com/codespell-project/codespell>`_ integrated into the pre-commit process. If any spelling issues are detected, the recommended corrections will be applied automatically to the file, ready for commit.
@@ -127,8 +129,8 @@ It is necessary to have ``esptool.py`` installed (see `Development Setup`_) in y
 The following tests run automatically by GitHub Actions for each Pull Request. You can run them locally to check for regressions in the respective functionality:
 
 *  ``test_imagegen.py`` tests the ``elf2image`` command
-*  ``test_image_info.py`` tests the ``image_info`` command
-*  ``test_mergebin.py`` tests the ``merge_bin`` command
+*  ``test_image_info.py`` tests the ``image-info`` command
+*  ``test_mergebin.py`` tests the ``merge-bin`` command
 *  ``test_modules.py`` tests the modules used by ``esptool.py`` for regressions
 *  ``test_espsecure.py`` tests ``espsecure.py`` functionality
 *  ``test_espsecure_hsm.py`` tests support of external HSM signing in ``espsecure.py``. These tests require additional prerequisites, see ``SoftHSM2 setup`` in the `tests workflow definition <https://github.com/espressif/esptool/blob/master/.github/workflows/test_esptool.yml>`_ for more information.
@@ -143,7 +145,7 @@ The following tests are not run automatically by GitHub Actions, because they ne
 
    ``pytest test_esptool.py --port /dev/ttyUSB0 --chip esp32 --baud 230400``
 
-   Or to run the TestFlashing suite only (using the pytest ``-k`` option to select tests based on their name) on an ESP8266 board connected to /dev/ttyUSB2, at 460800bps:
+   Or to run the ``TestFlashing`` suite only (using the pytest ``-k`` option to select tests based on their name) on an ESP8266 board connected to /dev/ttyUSB2, at 460800bps:
 
    ``pytest test_esptool.py --port /dev/ttyUSB2 --chip esp8266 --baud 460800 -k TestFlashing``
 
@@ -171,9 +173,7 @@ The whole test suite (without the tests needing an actual hardware or installati
 Pull Request Process
 --------------------
 
-.. note::
-
-   If you are developing the stub flasher and plan to send a pull request, please use the latest toolchains available.
+If you would like to contribute to the flasher stub, please see the `Flasher stub repository <https://github.com/espressif/esptool-legacy-flasher-stub>`_.
 
 After you open the Pull Request, there will probably be some discussion in the comments field of the request itself.
 
