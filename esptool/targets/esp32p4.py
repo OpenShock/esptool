@@ -5,11 +5,12 @@
 
 import struct
 from time import sleep
+from typing import Dict
 
 from .esp32 import ESP32ROM
 from ..loader import ESPLoader, StubMixin
 from ..logger import log
-from ..util import FatalError, NotSupportedError
+from ..util import FatalError, NotImplementedInROMError
 
 
 class ESP32P4ROM(ESP32ROM):
@@ -100,7 +101,8 @@ class ESP32P4ROM(ESP32ROM):
 
     UF2_FAMILY_ID = 0x3D308E94
 
-    KEY_PURPOSES: dict[int, str] = {
+    EFUSE_MAX_KEY = 5
+    KEY_PURPOSES: Dict[int, str] = {
         0: "USER/EMPTY",
         1: "ECDSA_KEY",
         2: "XTS_AES_256_KEY_1",
@@ -142,23 +144,25 @@ class ESP32P4ROM(ESP32ROM):
     def get_chip_description(self):
         chip_name = {
             0: "ESP32-P4",
-        }.get(self.get_pkg_version(), "Unknown ESP32-P4")
+        }.get(self.get_pkg_version(), "unknown ESP32-P4")
         major_rev = self.get_major_chip_version()
         minor_rev = self.get_minor_chip_version()
         return f"{chip_name} (revision v{major_rev}.{minor_rev})"
 
     def get_chip_features(self):
-        return ["Dual Core + LP Core", "400MHz"]
+        return ["High-Performance MCU"]
 
     def get_crystal_freq(self):
         # ESP32P4 XTAL is fixed to 40MHz
         return 40
 
     def get_flash_voltage(self):
-        raise NotSupportedError(self, "Reading flash voltage")
+        pass  # not supported on ESP32-P4
 
     def override_vddsdio(self, new_voltage):
-        raise NotSupportedError(self, "Overriding VDDSDIO")
+        raise NotImplementedInROMError(
+            "VDD_SDIO overrides are not supported for ESP32-P4"
+        )
 
     def read_mac(self, mac_type="BASE_MAC"):
         """Read MAC from EFUSE region"""

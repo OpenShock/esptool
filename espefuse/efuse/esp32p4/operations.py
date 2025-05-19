@@ -177,15 +177,11 @@ def add_commands(subparsers, efuses):
 
 
 def burn_custom_mac(esp, efuses, args):
-    efuses["CUSTOM_MAC"].save(args.mac)
-    if not efuses.burn_all(check_batch_mode=True):
-        return
-    get_custom_mac(esp, efuses, args)
-    print("Successful")
+    print("Not supported yet")
 
 
 def get_custom_mac(esp, efuses, args):
-    print("Custom MAC Address: {}".format(efuses["CUSTOM_MAC"].get()))
+    print("Not supported yet")
 
 
 def set_flash_voltage(esp, efuses, args):
@@ -309,13 +305,12 @@ def burn_key(esp, efuses, args, digest=None):
         if digest is None:
             if keypurpose == "ECDSA_KEY":
                 sk = espsecure.load_ecdsa_signing_key(datafile)
-                data = espsecure.get_ecdsa_signing_key_raw_bytes(sk)
+                data = sk.to_string()
                 if len(data) == 24:
                     # the private key is 24 bytes long for NIST192p, add 8 bytes of padding
                     data = b"\x00" * 8 + data
             else:
                 data = datafile.read()
-                datafile.close()
         else:
             data = datafile
 

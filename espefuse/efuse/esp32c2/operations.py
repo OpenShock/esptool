@@ -207,11 +207,7 @@ def burn_key(esp, efuses, args, digest=None):
 
     print("Burn keys to blocks:")
     for datafile, keypurpose in zip(datafile_list, keypurpose_list):
-        if isinstance(datafile, bytes):
-            data = datafile
-        else:
-            data = datafile.read()
-            datafile.close()
+        data = datafile if isinstance(datafile, bytes) else datafile.read()
 
         if keypurpose == "XTS_AES_128_KEY_DERIVED_FROM_128_EFUSE_BITS":
             efuse = efuses["BLOCK_KEY0_LOW_128"]

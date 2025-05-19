@@ -23,13 +23,13 @@ directory ``esptool.py`` is being run in is inspected.
 If a configuration file is not found here, the current user's OS configuration directory is inspected next:
 
  - Linux: ``/home/<user>/.config/esptool/``
- - macOS ``/Users/<user>/.config/esptool/``
+ - MacOS ``/Users/<user>/.config/esptool/``
  - Windows: ``c:\Users\<user>\AppData\Local\esptool\``
 
 If a configuration file is still not found, the last inspected location is the home directory:
 
  - Linux: ``/home/<user>/``
- - macOS ``/Users/<user>/``
+ - MacOS ``/Users/<user>/``
  - Windows: ``c:\Users\<user>\``
 
 On Windows, the home directory can be set with the ``HOME`` or ``USERPROFILE`` environment variables.
@@ -40,7 +40,7 @@ environment variable, e.g. ``ESPTOOL_CFGFILE = ~/custom_config.cfg``.
 This overrides the search priorities described above.
 
 ``esptool.py`` will read settings from other usual configuration files if no other
-configuration file is used. It will automatically read from ``setup.cfg`` or
+configuration file is used.  It will automatically read from ``setup.cfg`` or
 ``tox.ini`` if they exist.
 
 As a result, the order of priority of inspected configuration files is:
@@ -87,7 +87,7 @@ Complete list of configurable options:
 +------------------------------+-----------------------------------------------------------+----------+
 | chip_erase_timeout           | Timeout for a full chip erase                             | 120 s    |
 +------------------------------+-----------------------------------------------------------+----------+
-| max_timeout                  | The longest any operation can run (e.g. writing a block)  | 240 s    |
+| max_timeout                  | The longest any command can run                           | 240 s    |
 +------------------------------+-----------------------------------------------------------+----------+
 | sync_timeout                 | Timeout for syncing with the bootloader                   | 0.1 s    |
 +------------------------------+-----------------------------------------------------------+----------+
@@ -97,7 +97,7 @@ Complete list of configurable options:
 +------------------------------+-----------------------------------------------------------+----------+
 | erase_write_timeout_per_mb   | Timeout (per megabyte) for erasing and writing data       | 40 s     |
 +------------------------------+-----------------------------------------------------------+----------+
-| mem_end_rom_timeout          | Short timeout for MEM_END                                 | 0.2 s    |
+| mem_end_rom_timeout          | Short timeout for ESP_MEM_END                             | 0.2 s    |
 +------------------------------+-----------------------------------------------------------+----------+
 | serial_write_timeout         | Timeout for serial port write                             | 10 s     |
 +------------------------------+-----------------------------------------------------------+----------+
@@ -113,13 +113,6 @@ Complete list of configurable options:
 +------------------------------+-----------------------------------------------------------+----------+
 | custom_hard_reset_sequence   | Custom reset sequence for hard resetting the chip         |          |
 +------------------------------+-----------------------------------------------------------+----------+
-
-
-.. note::
-
-    ``connect_attempts`` is the number of attempts to connect to the chip after the port is detected. This is useful when the chip does not enter bootloader mode immediately. For example, when :ref:`automatic bootloader mode <automatic-bootloader>` does not work and :ref:`manual bootloader mode <manual-bootloader>` has to be used.
-
-    On the other hand, ``open_port_attempts`` is the number of attempts to look for a port to open. When starting the command, the port does not have to be available. This can be useful when the chip is in deep sleep and is connected using USB-Serial/JTAG. In such cases, the port can disappear.
 
 Custom Reset Sequences
 ----------------------
@@ -153,25 +146,13 @@ For example: ``D0|R1|W0.1|D1|R0|W0.05|D0`` represents the following classic rese
 
 .. code-block:: python
 
-    _setDTR(False)  # BOOT=HIGH
+    _setDTR(False)  # IO0=HIGH
     _setRTS(True)   # EN=LOW, chip in reset
     time.sleep(0.1)
-    _setDTR(True)   # BOOT=LOW
+    _setDTR(True)   # IO0=LOW
     _setRTS(False)  # EN=HIGH, chip out of reset
     time.sleep(0.05)
-    _setDTR(False)  # BOOT=HIGH, done
-
-The sequence can be visualized as follows:
-
-.. figure:: diag/reset_sequence.svg
-    :align: center
-    :alt: Signal representation of sequence
-
-    Signal representation of the reset sequence
-
-.. note::
-
-   Please note that this sequence is representation of signals on Espressif devkit and may differ on other boards.
+    _setDTR(False)  # IO0=HIGH, done
 
 Similarly, ``R1|W0.1|R0`` represents the classic hard reset sequence:
 

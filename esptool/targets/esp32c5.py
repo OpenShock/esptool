@@ -5,6 +5,7 @@
 
 import struct
 import time
+from typing import Dict
 
 from .esp32c3 import ESP32C3ROM
 from .esp32c6 import ESP32C6ROM
@@ -17,8 +18,6 @@ class ESP32C5ROM(ESP32C6ROM):
     CHIP_NAME = "ESP32-C5"
     IMAGE_CHIP_ID = 23
 
-    BOOTLOADER_FLASH_OFFSET = 0x2000
-
     EFUSE_BASE = 0x600B4800
     EFUSE_BLOCK1_ADDR = EFUSE_BASE + 0x044
     MAC_EFUSE_REG = EFUSE_BASE + 0x044
@@ -26,17 +25,17 @@ class ESP32C5ROM(ESP32C6ROM):
     EFUSE_RD_REG_BASE = EFUSE_BASE + 0x030  # BLOCK0 read base address
 
     EFUSE_PURPOSE_KEY0_REG = EFUSE_BASE + 0x34
-    EFUSE_PURPOSE_KEY0_SHIFT = 22
+    EFUSE_PURPOSE_KEY0_SHIFT = 24
     EFUSE_PURPOSE_KEY1_REG = EFUSE_BASE + 0x34
-    EFUSE_PURPOSE_KEY1_SHIFT = 27
+    EFUSE_PURPOSE_KEY1_SHIFT = 28
     EFUSE_PURPOSE_KEY2_REG = EFUSE_BASE + 0x38
     EFUSE_PURPOSE_KEY2_SHIFT = 0
     EFUSE_PURPOSE_KEY3_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY3_SHIFT = 5
+    EFUSE_PURPOSE_KEY3_SHIFT = 4
     EFUSE_PURPOSE_KEY4_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY4_SHIFT = 10
+    EFUSE_PURPOSE_KEY4_SHIFT = 8
     EFUSE_PURPOSE_KEY5_REG = EFUSE_BASE + 0x38
-    EFUSE_PURPOSE_KEY5_SHIFT = 15
+    EFUSE_PURPOSE_KEY5_SHIFT = 12
 
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT_REG = EFUSE_RD_REG_BASE
     EFUSE_DIS_DOWNLOAD_MANUAL_ENCRYPT = 1 << 20
@@ -80,7 +79,8 @@ class ESP32C5ROM(ESP32C6ROM):
 
     UF2_FAMILY_ID = 0xF71C0343
 
-    KEY_PURPOSES: dict[int, str] = {
+    EFUSE_MAX_KEY = 5
+    KEY_PURPOSES: Dict[int, str] = {
         0: "USER/EMPTY",
         1: "ECDSA_KEY",
         2: "XTS_AES_256_KEY_1",
@@ -111,19 +111,10 @@ class ESP32C5ROM(ESP32C6ROM):
     def get_chip_description(self):
         chip_name = {
             0: "ESP32-C5",
-        }.get(self.get_pkg_version(), "Unknown ESP32-C5")
+        }.get(self.get_pkg_version(), "unknown ESP32-C5")
         major_rev = self.get_major_chip_version()
         minor_rev = self.get_minor_chip_version()
         return f"{chip_name} (revision v{major_rev}.{minor_rev})"
-
-    def get_chip_features(self):
-        return [
-            "Wi-Fi 6 (dual-band)",
-            "BT 5 (LE)",
-            "IEEE802.15.4",
-            "Single Core + LP Core",
-            "240MHz",
-        ]
 
     def get_crystal_freq(self):
         # The crystal detection algorithm of ESP32/ESP8266
@@ -144,7 +135,7 @@ class ESP32C5ROM(ESP32C6ROM):
             crystal_freq_detect = self.get_crystal_freq()
             log.print(
                 f"ROM expects crystal freq: {crystal_freq_rom_expect} MHz, "
-                f"detected {crystal_freq_detect} MHz."
+                f"detected {crystal_freq_detect} MHz"
             )
             baud_rate = baud
             # If detect the XTAL is 48MHz, but the ROM code expects it to be 40MHz
@@ -157,40 +148,14 @@ class ESP32C5ROM(ESP32C6ROM):
                 ESPLoader.change_baud(self, baud_rate)
                 return
 
-            log.print(f"Changing baud rate to {baud_rate}...")
-            self.command(
-                self.ESP_CMDS["CHANGE_BAUDRATE"], struct.pack("<II", baud_rate, 0)
-            )
+            log.print(f"Changing baud rate to {baud_rate}")
+            self.command(self.ESP_CHANGE_BAUDRATE, struct.pack("<II", baud_rate, 0))
             log.print("Changed.")
             self._set_port_baudrate(baud)
             time.sleep(0.05)  # get rid of garbage sent during baud rate change
             self.flush_input()
         else:
             ESPLoader.change_baud(self, baud)
-
-    def get_key_block_purpose(self, key_block):
-        if key_block < 0 or key_block > self.EFUSE_MAX_KEY:
-            raise FatalError(
-                f"Valid key block numbers must be in range 0-{self.EFUSE_MAX_KEY}"
-            )
-
-        reg, shift = [
-            (self.EFUSE_PURPOSE_KEY0_REG, self.EFUSE_PURPOSE_KEY0_SHIFT),
-            (self.EFUSE_PURPOSE_KEY1_REG, self.EFUSE_PURPOSE_KEY1_SHIFT),
-            (self.EFUSE_PURPOSE_KEY2_REG, self.EFUSE_PURPOSE_KEY2_SHIFT),
-            (self.EFUSE_PURPOSE_KEY3_REG, self.EFUSE_PURPOSE_KEY3_SHIFT),
-            (self.EFUSE_PURPOSE_KEY4_REG, self.EFUSE_PURPOSE_KEY4_SHIFT),
-            (self.EFUSE_PURPOSE_KEY5_REG, self.EFUSE_PURPOSE_KEY5_SHIFT),
-        ][key_block]
-        return (self.read_reg(reg) >> shift) & 0x1F
-
-    def is_flash_encryption_key_valid(self):
-        # Need to see an AES-128 key
-        purposes = [
-            self.get_key_block_purpose(b) for b in range(self.EFUSE_MAX_KEY + 1)
-        ]
-
-        return any(p == self.PURPOSE_VAL_XTS_AES128_KEY for p in purposes)
 
     def check_spi_connection(self, spi_connection):
         if not set(spi_connection).issubset(set(range(0, 29))):
