@@ -29,16 +29,17 @@ class CustomLogger(TemplateLogger):
         """
         pass
 
-    def print_overwrite(self, message: str, last_line: bool = False):
-        """
-        Prints a message, overwriting the currently printed line.
-        """
+    def stage(self, finish=False):
         pass
 
-    def set_progress(self, percentage: float):
-        """
-        Sets the progress of long-running operations to a specific percentage.
-        """
+    def progress_bar(
+        self,
+        cur_iter: int,
+        total_iters: int,
+        prefix: str = "",
+        suffix: str = "",
+        bar_length: int = 30,
+    ):
         pass
 
 
@@ -52,7 +53,9 @@ class CustomLoggerIncomplete:
 class TestLogger:
     @pytest.fixture
     def logger(self):
-        return EsptoolLogger()
+        log = EsptoolLogger()
+        log._set_smart_features(True)
+        return log
 
     def test_singleton(self, logger):
         logger2 = EsptoolLogger()
@@ -78,7 +81,8 @@ class TestLogger:
             logger.warning("This is a warning")
             assert (
                 fake_out.getvalue()
-                == f"{logger.ansi_yellow}Warning:{logger.ansi_normal} This is a warning\n"
+                == f"{logger.ansi_yellow}Warning:{logger.ansi_normal} "
+                "This is a warning\n"
             )
 
     def test_error_message(self, logger):
@@ -89,29 +93,40 @@ class TestLogger:
                 == f"{logger.ansi_red}This is an error{logger.ansi_normal}\n"
             )
 
-    def test_print_overwrite_tty(self, logger):
-        with patch("sys.stdout", new=StringIO()) as fake_out, patch(
-            "sys.stdout.isatty", return_value=True
-        ):
-            logger.print_overwrite("msg1", last_line=False)
-            logger.print_overwrite("msg2", last_line=True)
+    def test_stage(self, logger):
+        with patch("sys.stdout", new=StringIO()) as fake_out:
+            logger.stage()
+            assert logger._stage_active
+            logger.print("Line1")
+            logger.print("Line2")
+            logger.stage(finish=True)
+            assert not logger._stage_active
+            logger.print("Line3")
+
             output = fake_out.getvalue()
-            assert "msg1\n" not in output  # msg1 should not have a newline
-            assert f"\r{logger.ansi_clear}msg1" in output
-            assert f"\r{logger.ansi_clear}msg2\n" in output
+            assert f"{logger.ansi_line_up}{logger.ansi_line_clear}" * 2 in output
+            assert "Line1\nLine2\n" in output
+            assert "Line1\nLine2\nLine3\n" not in output
 
-    def test_print_overwrite_non_tty(self, logger):
-        with patch("sys.stdout", new=StringIO()) as fake_out, patch(
-            "sys.stdout.isatty", return_value=False
-        ):
-            logger.print_overwrite("msg1", last_line=False)
-            logger.print_overwrite("msg2", last_line=True)
-            assert fake_out.getvalue() == "msg1\nmsg2\n"  # Acting as a normal print()
-
-    def test_set_progress(self, logger):
-        logger.set_progress(50.0)
-        # Since set_progress is not implemented, we just ensure it doesn't raise an error
-        assert True
+    def test_progress_bar(self, logger):
+        with patch("sys.stdout", new=StringIO()) as fake_out:
+            logger.progress_bar(
+                cur_iter=2,
+                total_iters=4,
+                prefix="Progress: ",
+                suffix=" (2/4)",
+                bar_length=10,
+            )
+            logger.progress_bar(
+                cur_iter=4,
+                total_iters=4,
+                prefix="Progress: ",
+                suffix=" (4/4)",
+                bar_length=10,
+            )
+            output = fake_out.getvalue()
+            assert "Progress: [====>     ]  50.0% (2/4)" in output
+            assert "Progress: [==========] 100.0% (4/4) \n" in output
 
     def test_set_incomplete_logger(self, logger):
         with pytest.raises(
@@ -123,7 +138,7 @@ class TestLogger:
     def test_set_logger(self, logger):
         # Original logger
         with patch("sys.stdout", new=StringIO()) as fake_out:
-            version(None)  # This will log.print the estool version
+            version()  # This will log.print the estool version
             output = fake_out.getvalue()
             assert output == f"{__version__}\n"
 
@@ -131,6 +146,6 @@ class TestLogger:
         with patch("sys.stdout", new=StringIO()) as fake_out:
             logger.set_logger(CustomLogger())
             assert isinstance(logger, CustomLogger)
-            version(None)  # This will use print from CustomLogger
+            version()  # This will use print from CustomLogger
             output = fake_out.getvalue()
             assert output == f"Custom logger: {__version__}\n"
