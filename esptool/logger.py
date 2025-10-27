@@ -87,7 +87,7 @@ class EsptoolLogger(TemplateLogger):
         Singleton to ensure only one instance of the logger exists.
         """
         if not hasattr(cls, "instance"):
-            cls.instance = super(EsptoolLogger, cls).__new__(cls)
+            cls.instance = super().__new__(cls)
             cls.instance.set_verbosity("auto")
         return cls.instance
 
@@ -115,7 +115,7 @@ class EsptoolLogger(TemplateLogger):
 
             # Determine if colors should be enabled
             cls.instance._smart_features = (
-                is_tty and term_supports_color and not no_color
+                is_tty or term_supports_color and not no_color
             )
             # Handle Windows specifically
             if sys.platform == "win32" and cls.instance._smart_features:
