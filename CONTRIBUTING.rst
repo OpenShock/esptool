@@ -131,7 +131,6 @@ The following tests run automatically by GitHub Actions for each Pull Request. Y
 *  ``test_imagegen.py`` tests the ``elf2image`` command
 *  ``test_image_info.py`` tests the ``image-info`` command
 *  ``test_mergebin.py`` tests the ``merge-bin`` command
-*  ``test_port_sorting.py`` tests the port sorting algorithm of ``esptool``
 *  ``test_modules.py`` tests the modules used by ``esptool`` for regressions
 *  ``test_espsecure.py`` tests ``espsecure`` functionality
 *  ``test_espsecure_hsm.py`` tests support of external HSM signing in ``espsecure``. These tests require additional prerequisites, see ``SoftHSM2 setup`` in the `tests workflow definition <https://github.com/espressif/esptool/blob/master/.github/workflows/test_esptool.yml>`_ for more information.
@@ -174,7 +173,7 @@ The whole test suite (without the tests needing an actual hardware or installati
 Pull Request Process
 --------------------
 
-If you would like to contribute to the flasher stub, please see the `Flasher stub repository <https://github.com/espressif/esptool-legacy-flasher-stub>`_.
+If you would like to contribute to the flasher stub, please see the `esp-flasher-stub repository <https://github.com/espressif/esp-flasher-stub>`_.
 
 After you open the Pull Request, there will probably be some discussion in the comments field of the request itself.
 

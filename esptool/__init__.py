@@ -21,6 +21,7 @@ __all__ = [
     "read_flash_sfdp",
     "read_mac",
     "read_mem",
+    "read_nand_spare",
     "reset_chip",
     "run",
     "run_stub",
@@ -29,37 +30,62 @@ __all__ = [
     "write_flash",
     "write_flash_status",
     "write_mem",
+    "write_nand_spare",
 ]
 
-__version__ = "5.1.0"
+__version__ = "5.3.1"
 
 import os
 import shlex
 import sys
 import time
 import traceback
-import rich_click as click
 import typing as t
+from itertools import chain, cycle, repeat
 
+import rich_click as click
+import serial
+from esp_pylib.cli_options import MutuallyExclusiveOption, OptionEatAll
+from esp_pylib.cli_types import AnyIntType, AutoSizeType, BaudRateType, SerialPortType
+from esp_pylib.excepthook import install_exception_reporting
+from esp_pylib.logger import EspLog
+from esp_pylib.serial_ports import get_port_names, parse_port_filters
+from rich.markup import escape
+
+from esptool.cli_util import (
+    AddrFilenameArg,
+    AddrFilenamePairType,
+    AutoChunkSizeType,
+    AutoHex2BinType,
+    ChipType,
+    DiffWithType,
+    EsptoolGroup,
+    ResetModeType,
+    SpiConnectionType,
+    parse_size_arg,
+)
 from esptool.cmds import (
+    NAND_BLOCK_COUNT,
+    attach_flash,
     chip_id,
     detect_chip,
     detect_flash_size,
+    dump_bbm,
     dump_mem,
     elf2image,
     erase_flash,
     erase_region,
-    attach_flash,
     flash_id,
-    read_flash_sfdp,
     get_security_info,
     image_info,
     load_ram,
     merge_bin,
     read_flash,
+    read_flash_sfdp,
     read_flash_status,
     read_mac,
     read_mem,
+    read_nand_spare,
     reset_chip,
     run,
     run_stub,
@@ -68,14 +94,15 @@ from esptool.cmds import (
     write_flash,
     write_flash_status,
     write_mem,
+    write_nand_spare,
 )
 from esptool.config import load_config_file
 from esptool.loader import (
     DEFAULT_CONNECT_ATTEMPTS,
     DEFAULT_OPEN_PORT_ATTEMPTS,
-    StubFlasher,
+    TROUBLESHOOTING_GUIDE_URL,
     ESPLoader,
-    list_ports,
+    StubFlasher,
 )
 from esptool.logger import log
 from esptool.targets import CHIP_DEFS, CHIP_LIST, ESP32ROM
@@ -85,26 +112,9 @@ from esptool.util import (
     check_deprecated_py_suffix,
     flash_size_bytes,
 )
-from itertools import chain, cycle, repeat
 
-import serial
-
-from esptool.cli_util import (
-    AutoSizeType,
-    Group,
-    AddrFilenameArg,
-    AutoChunkSizeType,
-    ChipType,
-    AnyIntType,
-    OptionEatAll,
-    MutuallyExclusiveOption,
-    ResetModeType,
-    SpiConnectionType,
-    AutoHex2BinType,
-    AddrFilenamePairType,
-    parse_port_filters,
-    parse_size_arg,
-)
+# Backward compatibility for ESP-IDF
+get_port_list = get_port_names
 
 # Show arguments in the help output, this was default in argparse
 click.rich_click.SHOW_ARGUMENTS = True
@@ -192,6 +202,58 @@ def add_spi_connection_arg(function):
     return function
 
 
+def _require_spi_connection_for_nand(flash_type: str, kwargs: dict) -> None:
+    """Raise UsageError if flash_type is 'nand' and --spi-connection is absent."""
+    if flash_type == "nand" and kwargs.get("spi_connection") is None:
+        raise click.UsageError(
+            "--spi-connection is required for NAND flash operations."
+        )
+
+
+def nand_command(function):
+    """Decorator for hidden NAND-only commands.
+
+    Sets ctx.obj["plugins"] = ["nand"] and validates that --spi-connection was
+    provided before the wrapped function body runs. Replaces @click.pass_context
+    for the decorated command.
+    """
+
+    import functools
+
+    @functools.wraps(function)
+    @click.pass_context
+    def wrapper(ctx, *args, **kwargs):
+        _require_spi_connection_for_nand("nand", kwargs)
+        ctx.ensure_object(dict)
+        ctx.obj["plugins"] = ["nand"]
+        return function(ctx, *args, **kwargs)
+
+    return wrapper
+
+
+def add_flash_type_arg(function):
+    """Add flash type argument (NOR or NAND)"""
+
+    def _flash_type_callback(ctx: click.Context, _param: click.Parameter, value: str):
+        ctx.ensure_object(dict)
+        if value == "nand":
+            ctx.obj["plugins"] = ["nand"]
+        return value
+
+    function = click.option(
+        "--flash-type",
+        "-ft",
+        help="Flash type: nor (default) or nand.",
+        type=click.Choice(["nor", "nand"]),
+        default="nor",
+        hidden=True,
+        is_eager=False,
+        expose_value=True,
+        callback=_flash_type_callback,
+    )(function)
+    return function
+
+
 def add_spi_flash_options(
     allow_keep: bool = False, auto_detect: bool = False, size_only: bool = False
 ) -> t.Callable:
@@ -269,7 +331,10 @@ def add_spi_flash_options(
 def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
     # Check if we are writing/erasing/reading past 16MB boundary
     if (
-        not (esp.IS_STUB and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4", "ESP32-C5"])
+        not (
+            esp.IS_STUB
+            and esp.CHIP_NAME in ["ESP32-S3", "ESP32-P4", "ESP32-C5", "ESP32-C61"]
+        )
         and address + size > 0x1000000
     ):
         raise FatalError(
@@ -295,7 +360,7 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 
 
 @click.group(
-    cls=Group,
+    cls=EsptoolGroup,
     no_args_is_help=True,
     context_settings=dict(help_option_names=["-h", "--help"], max_content_width=120),
     help=f"esptool v{__version__} - serial utility for flashing, provisioning, "
@@ -311,14 +376,14 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 @click.option(
     "--port",
     "-p",
-    type=click.Path(),
+    type=SerialPortType(),
     default=os.environ.get("ESPTOOL_PORT", None),
     help="Serial port device.",
 )
 @click.option(
     "--baud",
     "-b",
-    type=AnyIntType(),
+    type=BaudRateType(),
     default=os.environ.get("ESPTOOL_BAUD", ESPLoader.ESP_ROM_BAUD),
     help="Serial port baud rate used when flashing/reading.",
 )
@@ -355,7 +420,7 @@ def check_flash_size(esp: ESPLoader, address: int, size: int) -> None:
 # is implied globally
 @click.option(
     "--stub-version",
-    default=os.environ.get("ESPTOOL_STUB_VERSION", "1"),
+    default=os.environ.get("ESPTOOL_STUB_VERSION", None),
     type=click.Choice(["1", "2"]),
     # not a public option and is not subject to the semantic versioning policy
     hidden=True,
@@ -417,14 +482,29 @@ def cli(
 
 def prepare_esp_object(ctx):
     """Prepare ESP object for operation"""
-    StubFlasher.set_stub_subdir(ctx.obj["stub_version"])
+    if ctx.obj.get("plugins") and ctx.obj["no_stub"]:
+        raise FatalError(
+            "Plugin commands require the stub flasher. Remove --no-stub to use plugins."
+        )
+    if ctx.obj["stub_version"]:
+        StubFlasher.set_stub_subdir(ctx.obj["stub_version"])
+    elif ctx.obj.get("plugins"):
+        # Plugin support requires stubs built with the plugin mechanism (dir "2").
+        # Prefer that directory when plugins are requested.
+        StubFlasher.set_stub_subdir("2")
     # Commands that require an ESP object (flash read/write, etc.)
     # 1) Get the ESP object
     #######################
 
-    # Disable output stage collapsing, colors, and overwriting in trace mode
+    # Disable output stage collapsing, colors, and overwriting in trace mode.
+    # Must touch ``EspLog.instance`` (what the ``log`` proxy reads), not
+    # ``EsptoolLogger()`` — the subclass ctor cache can diverge after
+    # ``set_logger`` or test harness resets.
     if ctx.obj["trace"]:
-        log._smart_features = False
+        inst = EspLog.instance
+        if inst is not None and hasattr(inst, "_smart_features"):
+            inst._smart_features = False
+        log.set_verbosity("verbose")
 
     log.stage()
 
@@ -436,8 +516,10 @@ def prepare_esp_object(ctx):
         initial_baud = ctx.obj["baud"]
 
     if ctx.obj["port"] is None:
-        filters = parse_port_filters(ctx.obj["port_filter"])
-        ser_list = get_port_list(*filters)
+        try:
+            ser_list = get_port_names(**parse_port_filters(ctx.obj["port_filter"]))
+        except ValueError as exc:
+            raise FatalError(str(exc)) from exc
         log.print(f"Found {len(ser_list)} serial ports...")
     else:
         ser_list = [ctx.obj["port"]]
@@ -447,13 +529,13 @@ def prepare_esp_object(ctx):
     try:
         open_port_attempts = int(open_port_attempts)
     except ValueError:
-        raise SystemExit("Invalid value for ESPTOOL_OPEN_PORT_ATTEMPTS.")
+        raise FatalError("Invalid value for ESPTOOL_OPEN_PORT_ATTEMPTS.")
 
     esp = ctx.obj.get("esp", None)
     ctx.obj["external_esp"] = esp is not None
     if open_port_attempts != 1:
         if ctx.obj["port"] is None or ctx.obj["chip"] == "auto":
-            log.warning(
+            log.warn(
                 "The ESPTOOL_OPEN_PORT_ATTEMPTS (open_port_attempts) option "
                 "can only be used with --port and --chip arguments."
             )
@@ -483,7 +565,7 @@ def prepare_esp_object(ctx):
         )
 
     log.stage(finish=True)
-    log.print(f"Connected to {esp.CHIP_NAME} on {esp._port.port}:")
+    log.print(f"Connected to {esp.CHIP_NAME} on {escape(str(esp._port.port))}:")
 
     # 2) Print the chip info
     ########################
@@ -517,7 +599,7 @@ def prepare_esp_object(ctx):
     ############################
 
     if not ctx.obj["no_stub"]:
-        esp = run_stub(esp)
+        esp = run_stub(esp, plugins=ctx.obj.get("plugins"))
 
     # 5) Configure the baud rate and voltage regulator
     ##################################################
@@ -529,7 +611,7 @@ def prepare_esp_object(ctx):
         try:
             esp.change_baud(ctx.obj["baud"])
         except NotImplementedInROMError:
-            log.warning(
+            log.warn(
                 f"ROM doesn't support changing baud rate. "
                 f"Keeping initial baud rate {initial_baud}."
             )
@@ -648,6 +730,36 @@ def write_mem_cli(ctx, address, value, mask):
     help="Ignore flash encryption eFuse settings.",
 )
 @click.option(
+    "--diff-with",
+    type=DiffWithType(exists=True, dir_okay=False, readable=True),
+    cls=OptionEatAll,
+    multiple=True,
+    help="Previously flashed file(s) to compare the to-be-flashed files with "
+    "for fast reflashing. Use 'skip' to skip comparison for a specific file. "
+    "This list is zipped sequentially with the files being flashed.",
+)
+@click.option(
+    "--trust-flash-content",
+    is_flag=True,
+    help="Skip post-flash verification of unchanged files when using --diff-with to "
+    "save time. Only unchanged files are skipped without an MD5 check, written data "
+    "is still verified after write and the whole file is reflashed if verification "
+    "fails. Requires --diff-with. Use only when flash has not been modified since the "
+    "last flash (e.g. no other tool, app, or manual change touched the data in flash).",
+    exclusive_with=["skip_flashed"],
+    cls=MutuallyExclusiveOption,
+)
+@click.option(
+    "--skip-flashed",
+    "-s",
+    is_flag=True,
+    help="Skip flashing if the new binary is already in flash. Performs MD5 checks "
+    "to verify the flash content matches the new binary. "
+    "Only for use when no --diff-with files are specified (mutually exclusive).",
+    exclusive_with=["diff_with", "trust_flash_content"],
+    cls=MutuallyExclusiveOption,
+)
+@click.option(
     "--force",
     is_flag=True,
     help="Force write, skip security and compatibility checks. Use with caution!",
@@ -669,7 +781,16 @@ def write_mem_cli(ctx, address, value, mask):
     exclusive_with=["compress"],
     cls=MutuallyExclusiveOption,
 )
+@click.option(
+    "--nand-end-address",
+    type=AnyIntType(),
+    default=None,
+    hidden=True,
+    help="End address (exclusive) for bad-block skip window (for NAND flash chips). "
+    "Defaults to end of chip address space.",
+)
 @add_spi_flash_options(allow_keep=True, auto_detect=True)
+@add_flash_type_arg
 @add_spi_connection_arg
 @click.pass_context
 def write_flash_cli(ctx, addr_filename, **kwargs):
@@ -679,13 +800,40 @@ def write_flash_cli(ctx, addr_filename, **kwargs):
     # and --encrypt-files, which represents the list of files to encrypt.
     # The reason is that allowing both at the same time increases the chances of
     # having contradictory lists (e.g. one file not available in one of list).
-    if kwargs["encrypt"] and kwargs["encrypt_files"] is not None:
+    if kwargs["encrypt"] and kwargs["encrypt_files"]:
         raise FatalError(
             "Options --encrypt and --encrypt-files "
             "must not be specified at the same time."
         )
+    if kwargs["trust_flash_content"] and not kwargs.get("diff_with"):
+        raise FatalError("Option --trust-flash-content requires --diff-with.")
+    # Map CLI name to internal name for write_flash
+    kwargs["no_diff_verify"] = kwargs.pop("trust_flash_content", False)
+    # Expand HEX file splits in diff_with if any
+    if "diff_with" in kwargs and kwargs["diff_with"]:
+        diff_with_expanded: list = []
+        for entry in kwargs["diff_with"]:
+            # Check if this entry is a HEX file that was split
+            if (
+                entry is not None
+                and hasattr(ctx, "_diff_with_hex_splits")
+                and entry in ctx._diff_with_hex_splits
+            ):
+                # This is a HEX file that was split, expand it to all splits
+                diff_with_expanded.extend(ctx._diff_with_hex_splits[entry])
+            else:
+                # Regular file or None (skip)
+                diff_with_expanded.append(entry)
+        kwargs["diff_with"] = diff_with_expanded
+
+    flash_type = kwargs.get("flash_type", "nor")
+    _require_spi_connection_for_nand(flash_type, kwargs)
     prepare_esp_object(ctx)
-    attach_flash(ctx.obj["esp"], kwargs.pop("spi_connection", None))
+    attach_flash(
+        ctx.obj["esp"],
+        kwargs.pop("spi_connection", None),
+        flash_type=flash_type,
+    )
     write_flash(ctx.obj["esp"], addr_filename, **kwargs)
 
 
@@ -883,28 +1031,101 @@ def write_flash_status_cli(ctx, value, bytes, **kwargs):
 @click.argument("output", type=click.Path())
 @click.option("--no-progress", "-p", is_flag=True, help="Suppress progress output.")
 @add_spi_flash_options(allow_keep=True, auto_detect=True, size_only=True)
+@add_flash_type_arg
 @add_spi_connection_arg
 @click.pass_context
 def read_flash_cli(ctx, address, size, output, **kwargs):
     """Read SPI flash memory content."""
+    flash_type = kwargs.get("flash_type", "nor")
+    _require_spi_connection_for_nand(flash_type, kwargs)
     prepare_esp_object(ctx)
-    attach_flash(ctx.obj["esp"], kwargs.pop("spi_connection", None))
+    attach_flash(
+        ctx.obj["esp"],
+        kwargs.pop("spi_connection", None),
+        flash_type=flash_type,
+    )
     size = parse_size_arg(ctx.obj["esp"], size)
-    check_flash_size(ctx.obj["esp"], address, size)
+    if flash_type == "nor":
+        check_flash_size(ctx.obj["esp"], address, size)
     read_flash(ctx.obj["esp"], address, size, output, **kwargs)
+
+
+@cli.command("read-nand-spare", hidden=True)
+@click.argument("page_number", type=AnyIntType())
+@add_spi_connection_arg
+@nand_command
+def read_nand_spare_cli(ctx, page_number, **kwargs):
+    """Read NAND flash spare area for a given page."""
+    spi_connection = kwargs.pop("spi_connection", None)
+    prepare_esp_object(ctx)
+    attach_flash(
+        ctx.obj["esp"],
+        spi_connection,
+        flash_type="nand",
+    )
+    read_nand_spare(ctx.obj["esp"], page_number)
+
+
+@cli.command("write-nand-spare", hidden=True)
+@click.argument("page_number", type=AnyIntType())
+@click.argument("is_bad", type=click.IntRange(0, 1))
+@add_spi_connection_arg
+@nand_command
+def write_nand_spare_cli(ctx, page_number, is_bad, **kwargs):
+    """Write NAND flash spare area to mark bad blocks."""
+    spi_connection = kwargs.pop("spi_connection", None)
+    prepare_esp_object(ctx)
+    attach_flash(
+        ctx.obj["esp"],
+        spi_connection,
+        flash_type="nand",
+    )
+    write_nand_spare(ctx.obj["esp"], page_number, is_bad)
+
+
+@cli.command("dump-bbm", hidden=True)
+@click.argument("output", type=click.Path())
+@click.option(
+    "--block-count",
+    type=int,
+    default=NAND_BLOCK_COUNT,
+    hidden=True,
+    help="Number of blocks to scan",
+)
+@add_spi_connection_arg
+@nand_command
+def dump_bbm_cli(ctx, output, block_count, **kwargs):
+    """Dump bad-block markers from NAND flash to a binary file."""
+    spi_connection = kwargs.pop("spi_connection", None)
+    prepare_esp_object(ctx)
+    attach_flash(
+        ctx.obj["esp"],
+        spi_connection,
+        flash_type="nand",
+    )
+    dump_bbm(ctx.obj["esp"], output, block_count)
 
 
 @cli.command("verify-flash")
 @click.argument("addr-filename", nargs=-1, required=True, cls=AddrFilenameArg)
 @click.option("--diff", "-d", is_flag=True, help="Show differences.")
 @add_spi_flash_options(allow_keep=True, auto_detect=True)
+@add_flash_type_arg
 @add_spi_connection_arg
 @click.pass_context
 def verify_flash_cli(ctx, addr_filename, diff, **kwargs):
     """Verify a binary blob against the flash memory content."""
+    flash_type = kwargs.pop("flash_type", "nor")
+    _require_spi_connection_for_nand(flash_type, kwargs)
     prepare_esp_object(ctx)
-    attach_flash(ctx.obj["esp"], kwargs.pop("spi_connection", None))
-    verify_flash(ctx.obj["esp"], addr_filename, diff=diff, **kwargs)
+    attach_flash(
+        ctx.obj["esp"],
+        kwargs.pop("spi_connection", None),
+        flash_type=flash_type,
+    )
+    verify_flash(
+        ctx.obj["esp"], addr_filename, diff=diff, flash_type=flash_type, **kwargs
+    )
 
 
 @cli.command("erase-flash")
@@ -913,13 +1134,19 @@ def verify_flash_cli(ctx, addr_filename, diff, **kwargs):
     is_flag=True,
     help="Erase flash even if security features are enabled. Use with caution!",
 )
+@add_flash_type_arg
 @add_spi_connection_arg
 @click.pass_context
-def erase_flash_cli(ctx, force, **kwargs):
+def erase_flash_cli(ctx, force, flash_type, **kwargs):
     """Erase the SPI flash memory."""
+    _require_spi_connection_for_nand(flash_type, kwargs)
     prepare_esp_object(ctx)
-    attach_flash(ctx.obj["esp"], kwargs.pop("spi_connection", None))
-    erase_flash(ctx.obj["esp"], force)
+    attach_flash(
+        ctx.obj["esp"],
+        kwargs.pop("spi_connection", None),
+        flash_type=flash_type,
+    )
+    erase_flash(ctx.obj["esp"], force, flash_type=flash_type)
 
 
 @cli.command("erase-region")
@@ -930,15 +1157,22 @@ def erase_flash_cli(ctx, force, **kwargs):
 )
 @click.argument("address", type=AnyIntType())
 @click.argument("size", type=AutoSizeType())
+@add_flash_type_arg
 @add_spi_connection_arg
 @click.pass_context
-def erase_region_cli(ctx, address, size, force, **kwargs):
+def erase_region_cli(ctx, address, size, force, flash_type, **kwargs):
     """Erase a region of the SPI flash memory."""
+    _require_spi_connection_for_nand(flash_type, kwargs)
     prepare_esp_object(ctx)
-    attach_flash(ctx.obj["esp"], kwargs.pop("spi_connection", None))
+    attach_flash(
+        ctx.obj["esp"],
+        kwargs.pop("spi_connection", None),
+        flash_type=flash_type,
+    )
     size = parse_size_arg(ctx.obj["esp"], size)
-    check_flash_size(ctx.obj["esp"], address, size)
-    erase_region(ctx.obj["esp"], address, size, force)
+    if flash_type != "nand":
+        check_flash_size(ctx.obj["esp"], address, size)
+    erase_region(ctx.obj["esp"], address, size, force, flash_type=flash_type)
 
 
 @cli.command("read-flash-sfdp")
@@ -1035,85 +1269,6 @@ def main(argv: list[str] | None = None, esp: ESPLoader | None = None):
             raise
 
 
-def get_port_list(
-    vids: list[str] = [],
-    pids: list[str] = [],
-    names: list[str] = [],
-    serials: list[str] = [],
-) -> list[str]:
-    if list_ports is None:
-        raise FatalError(
-            "Listing all serial ports is currently not available. "
-            "Please try to specify the port when running esptool or update "
-            "the pyserial package to the latest version."
-        )
-    ports = []
-    for port in list_ports.comports():
-        if sys.platform == "darwin" and port.device.endswith(
-            ("Bluetooth-Incoming-Port", "wlan-debug", "cu.debug-console")
-        ):
-            continue
-        if vids and (port.vid is None or port.vid not in vids):
-            continue
-        if pids and (port.pid is None or port.pid not in pids):
-            continue
-        if names and (
-            port.name is None or all(name not in port.name for name in names)
-        ):
-            continue
-        if serials and (
-            port.serial_number is None
-            or all(serial not in port.serial_number for serial in serials)
-        ):
-            continue
-        ports.append((port.device, port.vid))
-
-    # Constants for sorting optimization
-    ESPRESSIF_VID = 0x303A
-    LINUX_DEVICE_PATTERNS = ("ttyUSB", "ttyACM")
-    MACOS_DEVICE_PATTERNS = ("usbserial", "usbmodem")
-
-    def _port_sort_key_linux(port_info):
-        device, vid = port_info
-
-        if vid == ESPRESSIF_VID:
-            return (3, device)
-
-        if any(pattern in device for pattern in LINUX_DEVICE_PATTERNS):
-            return (2, device)
-
-        return (1, device)
-
-    def _port_sort_key_macos(port_info):
-        device, vid = port_info
-
-        if vid == ESPRESSIF_VID:
-            return (3, device)
-
-        if any(pattern in device for pattern in MACOS_DEVICE_PATTERNS):
-            return (2, device)
-
-        return (1, device)
-
-    def _port_sort_key_windows(port_info):
-        device, vid = port_info
-
-        if vid == ESPRESSIF_VID:
-            return (2, device)
-
-        return (1, device)
-
-    if sys.platform == "win32":
-        key_func = _port_sort_key_windows
-    elif sys.platform == "darwin":
-        key_func = _port_sort_key_macos
-    else:
-        key_func = _port_sort_key_linux
-
-    sorted_port_info = sorted(ports, key=key_func)
-    return [device for device, _ in sorted_port_info]
-
-
 def expand_file_arguments(argv: list[str]) -> list[str]:
     """
     Any argument starting with "@" gets replaced with all values read from a text file.
@@ -1132,7 +1287,7 @@ def expand_file_arguments(argv: list[str]) -> list[str]:
         else:
             new_args.append(arg)
     if expanded:
-        log.print(f"esptool {' '.join(new_args)}")
+        log.print(f"esptool {escape(' '.join(new_args))}")
         return new_args
     return argv
 
@@ -1147,7 +1302,7 @@ def connect_loop(
 ):
     chip_class = CHIP_DEFS[chip]
     esp = None
-    log.print(f"Serial port {port}:")
+    log.print(f"Serial port {escape(str(port))}:")
 
     first = True
     ten_cycle = cycle(chain(repeat(False, 9), (True,)))
@@ -1168,7 +1323,7 @@ def connect_loop(
                 esp._port.close()
             esp = None
             if first:
-                log.print(err)
+                log.print(escape(str(err)))
                 log.print("Retrying failed connection", end="", flush=True)
                 first = False
             if last:
@@ -1189,8 +1344,8 @@ def get_default_connected_device(
     before: str = "default-reset",
 ):
     _esp = None
-    for each_port in reversed(serial_list):
-        log.print(f"Serial port {each_port}:")
+    for each_port in serial_list:
+        log.print(f"Serial port {escape(str(each_port))}:")
         try:
             if chip == "auto":
                 _esp = detect_chip(
@@ -1204,7 +1359,7 @@ def get_default_connected_device(
         except (FatalError, OSError) as err:
             if port is not None:
                 raise
-            log.error(f"{each_port} failed to connect: {err}")
+            log.err(f"{escape(str(each_port))} failed to connect: {escape(str(err))}")
             if _esp and _esp._port:
                 _esp._port.close()
             _esp = None
@@ -1212,31 +1367,33 @@ def get_default_connected_device(
 
 
 def _main():
+    # Chain the esp-pylib exception hook so uncaught errors are forwarded to
+    # the IDE WebSocket (when ``ESPRESSIF_IDE_WS`` is set). Safe to call
+    # multiple times — the hook chains to whatever was already installed.
+    install_exception_reporting()
     check_deprecated_py_suffix(__name__)
     try:
         main()
     except FatalError as e:
-        log.error(f"\nA fatal error occurred: {e}")
-        sys.exit(2)
+        log.print("")
+        log.die(f"A fatal error occurred: {escape(str(e))}", exit_code=2)
     except serial.serialutil.SerialException as e:
-        log.error(f"\nA serial exception error occurred: {e}")
-        log.error(
+        log.print("")
+        log.die(
+            f"A serial exception error occurred: {escape(str(e))}\n"
             "Note: This error originates from pySerial. "
             "It is likely not a problem with esptool, "
-            "but with the hardware connection or drivers."
+            "but with the hardware connection or drivers.\n"
+            f"For troubleshooting steps visit: {TROUBLESHOOTING_GUIDE_URL}"
         )
-        log.error(
-            "For troubleshooting steps visit: "
-            "https://docs.espressif.com/projects/esptool/en/latest/troubleshooting.html"
-        )
-        sys.exit(1)
     except StopIteration:
-        log.error(traceback.format_exc())
-        log.error("A fatal error occurred: The chip stopped responding.")
-        sys.exit(2)
+        log.die(
+            escape(traceback.format_exc()),
+            "\nA fatal error occurred: The chip stopped responding.",
+            exit_code=2,
+        )
     except KeyboardInterrupt:
-        log.error("KeyboardInterrupt: Run cancelled by user.")
-        sys.exit(2)
+        log.die("KeyboardInterrupt: Run cancelled by user.", exit_code=2)
 
 
 if __name__ == "__main__":
